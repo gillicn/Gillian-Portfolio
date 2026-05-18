@@ -1,0 +1,352 @@
+# =========================
+# LOAD LIBRARIES
+# =========================
+library(tidyverse)
+library(lubridate)
+library(ggplot2)
+
+# =========================
+# IMPORT DATASETS
+# =========================
+appearances <- read.csv("appearances.csv")
+players <- read.csv("players.csv")
+clubs <- read.csv("clubs.csv")
+clubs_games <- read.csv("clubs_games.csv")
+
+# =========================
+# FILTER EPL 2024-2025 DATA
+# =========================
+appearances <- appearances %>%
+  filter(
+    date >= as.Date("2024-08-16") &
+    date <= as.Date("2025-05-25") &
+    competition_id == "GB1"
+  )
+
+# =========================
+# SELECT IMPORTANT VARIABLES
+# =========================
+appearances2 <- appearances %>%
+  select(
+    player_id,
+    game_id,
+    player_club_id,
+    date,
+    player_name,
+    minutes_played,
+    goals,
+    assists
+  )
+
+# =========================
+# CALCULATE PLAYER AGE
+# =========================
+players2 <- players %>%
+  select(
+    player_id,
+    date_of_birth,
+    sub_position,
+    market_value_in_eur
+  )
+
+players2$age <- floor(
+  time_length(
+    interval(players2$date_of_birth,
+             as.Date("2025-05-25")),
+    "years"
+  )
+)
+
+# =========================
+# CLUB DATA
+# =========================
+clubs2 <- clubs %>%
+  rename(player_club_id = club_id) %>%
+  select(player_club_id, name)
+
+# =========================
+# CLUB GAMES DATA
+# =========================
+clubs_games2 <- clubs_games %>%
+  select(game_id, club_id, own_goals, opponent_goals)
+
+clubs_games2$is_win <- ifelse(
+  clubs_games2$own_goals > clubs_games2$opponent_goals,
+  1,
+  0
+)
+
+# =========================
+# MERGE DATASETS
+# =========================
+player_data <- appearances2 %>%
+  left_join(players2, by = "player_id") %>%
+  left_join(clubs2, by = "player_club_id") %>%
+  left_join(
+    clubs_games2,
+    by = c("game_id" = "game_id",
+           "player_club_id" = "club_id")
+  )
+
+# =========================
+# SUMMARISE PLAYER STATS
+# =========================
+player_data <- player_data %>%
+  group_by(player_name) %>%
+  summarise(
+    player_id = first(player_id),
+    total_minutes_played = sum(minutes_played, na.rm = TRUE),
+    total_goals = sum(goals, na.rm = TRUE),
+    total_assists = sum(assists, na.rm = TRUE),
+    total_wins = sum(is_win, na.rm = TRUE),
+    sub_position = first(sub_position),
+    market_value_in_eur = first(market_value_in_eur),
+    age = first(age),
+    club = first(name)
+  )
+
+# =========================
+# REMOVE LOW MARKET VALUE OUTLIERS
+# =========================
+player_data <- player_data %>%
+  filter(market_value_in_eur >= 1000000)
+
+# =========================
+# LOG TRANSFORMATIONS
+# =========================
+player_data$log_market_value <-
+  log(player_data$market_value_in_eur)
+
+player_data$log_goals <-
+  log(player_data$total_goals + 1)
+
+player_data$log_assists <-
+  log(player_data$total_assists + 1)
+
+# =========================
+# HISTOGRAMS & BOXPLOTS
+# =========================
+
+# Market Value
+hist(player_data$log_market_value,
+     main = "Histogram of log(Market Value)",
+     col = "pink")
+
+boxplot(player_data$log_market_value,
+        main = "Boxplot of log(Market Value)",
+        col = "pink")
+
+# Goals
+hist(player_data$total_goals,
+     main = "Histogram of Total Goals",
+     xlab = "Total Goals",
+     col = "pink",
+     breaks = 15)
+
+boxplot(player_data$log_goals,
+        main = "Boxplot of ln(Total Goals + 1)",
+        ylab = "ln(Total Goals + 1)",
+        col = "pink")
+
+# Assists
+hist(player_data$total_assists,
+     main = "Histogram of Total Assists",
+     xlab = "Total Assists",
+     col = "pink",
+     breaks = 10)
+
+boxplot(player_data$log_assists,
+        main = "Boxplot of ln(Total Assists + 1)",
+        ylab = "ln(Total Assists + 1)",
+        col = "pink")
+
+# Minutes Played
+hist(player_data$total_minutes_played,
+     main = "Histogram of Total Minutes Played",
+     xlab = "Total Minutes Played",
+     col = "pink")
+
+boxplot(player_data$total_minutes_played,
+        main = "Boxplot of Total Minutes Played",
+        col = "pink")
+
+# Age
+hist(player_data$age,
+     main = "Histogram of Player Ages",
+     xlab = "Age",
+     col = "pink")
+
+boxplot(player_data$age,
+        main = "Boxplot of Players' Ages",
+        col = "pink")
+
+# =========================
+# POSITION GROUPING
+# =========================
+player_data <- player_data %>%
+  mutate(
+    position_group = case_when(
+      sub_position %in% c(
+        "Centre-Back",
+        "Left-Back",
+        "Right-Back"
+      ) ~ "Defender",
+
+      sub_position %in% c(
+        "Central Midfield",
+        "Defensive Midfield",
+        "Attacking Midfield"
+      ) ~ "Midfielder",
+
+      sub_position %in% c(
+        "Centre-Forward",
+        "Left Winger",
+        "Right Winger"
+      ) ~ "Forward",
+
+      TRUE ~ "Goalkeeper"
+    )
+  )
+
+# =========================
+# CORRELATION MATRIX
+# =========================
+X <- data.frame(
+  log_value = player_data$log_market_value,
+  age = player_data$age,
+  log_goals = player_data$log_goals,
+  log_assists = player_data$log_assists,
+  total_minutes_played = player_data$total_minutes_played,
+  total_wins = player_data$total_wins
+)
+
+pairs(X)
+
+cor(X)
+
+# =========================
+# SIMPLE LINEAR REGRESSIONS
+# =========================
+
+# Minutes Played
+model_minutes <- lm(
+  log_market_value ~ total_minutes_played,
+  data = player_data
+)
+
+summary(model_minutes)
+
+plot(player_data$total_minutes_played,
+     player_data$log_market_value,
+     xlab = "Total Minutes Played",
+     ylab = "Log(Market Value)",
+     main = "Regression: Log Market Value vs Minutes Played")
+
+abline(model_minutes, col = "red")
+
+# Goals
+model_goals <- lm(
+  log_market_value ~ log_goals,
+  data = player_data
+)
+
+summary(model_goals)
+
+# Assists
+model_assists <- lm(
+  log_market_value ~ log_assists,
+  data = player_data
+)
+
+summary(model_assists)
+
+# Wins
+model_wins <- lm(
+  log_market_value ~ total_wins,
+  data = player_data
+)
+
+summary(model_wins)
+
+# Age
+model_age <- lm(
+  log_market_value ~ age,
+  data = player_data
+)
+
+summary(model_age)
+
+plot(player_data$age,
+     player_data$log_market_value,
+     xlab = "Age",
+     ylab = "Log(Market Value)",
+     pch = 1)
+
+abline(model_age, col = "red")
+
+# =========================
+# ANOVA FOR POSITION
+# =========================
+anova_position <- aov(
+  log_market_value ~ position_group,
+  data = player_data
+)
+
+summary(anova_position)
+
+ggplot(player_data,
+       aes(x = position_group,
+           y = log_market_value)) +
+  geom_boxplot(fill = "pink") +
+  labs(
+    title = "Market Value Distribution by Position",
+    x = "Position Group",
+    y = "Market Value (Log scale)"
+  ) +
+  theme_minimal()
+
+# =========================
+# ANOVA FOR CLUB
+# =========================
+anova_club <- aov(
+  log_market_value ~ club,
+  data = player_data
+)
+
+summary(anova_club)
+
+ggplot(player_data,
+       aes(x = reorder(club,
+                       log_market_value,
+                       FUN = median),
+           y = log_market_value,
+           fill = club)) +
+  geom_boxplot() +
+  coord_flip() +
+  labs(
+    title = "Boxplot of log(Market Value) by Club",
+    x = "Club",
+    y = "log(Market Value in EUR)"
+  ) +
+  theme_minimal()
+
+# =========================
+# MULTIPLE LINEAR REGRESSION
+# =========================
+full_model <- lm(
+  log_market_value ~
+    total_minutes_played +
+    log_goals +
+    log_assists +
+    total_wins,
+  data = player_data
+)
+
+step_model <- step(
+  full_model,
+  direction = "backward"
+)
+
+summary(step_model)
+
+summary(step_model)$coefficients
